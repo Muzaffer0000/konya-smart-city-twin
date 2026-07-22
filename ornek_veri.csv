@@ -1,0 +1,10 @@
+id,startX,startZ,endX,endZ
+kolektor_1,-32,-32,32,-32
+kolektor_2,-32,0,32,0
+kolektor_3,-32,32,32,32
+ara_1,-16,-32,-16,0
+ara_2,16,-32,16,0
+ara_3,-16,0,-16,32
+ara_4,16,0,16,32
+capraz_ana_hat,-32,-32,32,32
+capraz_yan_hat,32,-32,-32,32
