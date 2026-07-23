@@ -1,9 +1,108 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Environment, Grid } from '@react-three/drei';
+import { OrbitControls, Environment } from '@react-three/drei';
 import axios from 'axios';
 import * as THREE from 'three';
 import './App.css';
+
+// Dinamik Hava Durumu (RainEffect)
+const RainEffect = ({ isRaining }) => {
+  const rainCount = 5000;
+  const [positions] = useState(() => {
+    const p = new Float32Array(rainCount * 3);
+    for (let i = 0; i < rainCount; i++) {
+      p[i * 3] = (Math.random() - 0.5) * 200;
+      p[i * 3 + 1] = Math.random() * 100;
+      p[i * 3 + 2] = (Math.random() - 0.5) * 200;
+    }
+    return p;
+  });
+  const pointsRef = useRef();
+  useFrame((state, delta) => {
+    if (!isRaining || !pointsRef.current) return;
+    const pos = pointsRef.current.geometry.attributes.position.array;
+    for (let i = 0; i < rainCount; i++) {
+      pos[i * 3 + 1] -= delta * 50;
+      if (pos[i * 3 + 1] < 0) pos[i * 3 + 1] = 100;
+    }
+    pointsRef.current.geometry.attributes.position.needsUpdate = true;
+  });
+  if (!isRaining) return null;
+  return (
+    <points ref={pointsRef}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" count={rainCount} array={positions} itemSize={3} />
+      </bufferGeometry>
+      <pointsMaterial color="#ffffff" size={0.2} transparent opacity={0.6} />
+    </points>
+  );
+};
+
+// Taşkın/Sızıntı Efekti (LeakEffect)
+const LeakEffect = ({ isLeaking }) => {
+  const particleCount = 200;
+  const [positions, velocities] = useMemo(() => {
+    const p = new Float32Array(particleCount * 3);
+    const v = new Float32Array(particleCount * 3);
+    for (let i = 0; i < particleCount; i++) {
+      p[i * 3] = 0; p[i * 3 + 1] = 0; p[i * 3 + 2] = 0;
+      v[i * 3] = (Math.random() - 0.5) * 2;
+      v[i * 3 + 1] = Math.random() * 5 + 5;
+      v[i * 3 + 2] = (Math.random() - 0.5) * 2;
+    }
+    return [p, v];
+  }, []);
+  const pointsRef = useRef();
+  useFrame((state, delta) => {
+    if (!isLeaking || !pointsRef.current) return;
+    const pos = pointsRef.current.geometry.attributes.position.array;
+    for (let i = 0; i < particleCount; i++) {
+      pos[i * 3] += velocities[i * 3] * delta;
+      pos[i * 3 + 1] += velocities[i * 3 + 1] * delta;
+      pos[i * 3 + 2] += velocities[i * 3 + 2] * delta;
+      velocities[i * 3 + 1] -= 9.8 * delta;
+      if (pos[i * 3 + 1] < -1) {
+        pos[i * 3] = 0; pos[i * 3 + 1] = 0; pos[i * 3 + 2] = 0;
+        velocities[i * 3] = (Math.random() - 0.5) * 2;
+        velocities[i * 3 + 1] = Math.random() * 5 + 5;
+        velocities[i * 3 + 2] = (Math.random() - 0.5) * 2;
+      }
+    }
+    pointsRef.current.geometry.attributes.position.needsUpdate = true;
+  });
+  if (!isLeaking) return null;
+  return (
+    <points ref={pointsRef} position={[0, -2.5, 0]}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" count={particleCount} array={positions} itemSize={3} />
+      </bufferGeometry>
+      <pointsMaterial color="#38bdf8" size={0.5} transparent opacity={0.8} />
+    </points>
+  );
+};
+
+// Kamera Kontrolcüsü (Sinematik Kamera)
+const CameraController = ({ selectedPipe, onArrive }) => {
+  const flyToTarget = useMemo(() => new THREE.Vector3(), []);
+  const flyToCamera = useMemo(() => new THREE.Vector3(), []);
+
+  useFrame((state) => {
+    if (selectedPipe) {
+      const midX = (selectedPipe.startX + selectedPipe.endX) / 2;
+      const midZ = (selectedPipe.startZ + selectedPipe.endZ) / 2;
+      flyToTarget.set(midX, 0, midZ);
+      flyToCamera.set(midX + 15, 15, midZ + 15);
+
+      state.camera.position.lerp(flyToCamera, 0.05);
+      if (state.controls) state.controls.target.lerp(flyToTarget, 0.05);
+
+      if (state.camera.position.distanceTo(flyToCamera) < 0.5 && onArrive) {
+        onArrive();
+      }
+    }
+  });
+  return null;
+};
 
 // Flood Plane Component for simulation
 const FloodLayer = ({ isFlooding }) => {
@@ -143,7 +242,7 @@ const PipeWater = ({ riskLevel, length = 25 }) => {
 
 // --- YENİ MAHALLE VE AĞ BİLEŞENLERİ ---
 
-const PipeSegment = ({ riskLevel, length }) => {
+const PipeSegment = ({ riskLevel, length, isLeaking }) => {
   return (
     <>
       <mesh position={[0, -2.5, 0]} rotation={[0, 0, Math.PI / 2]} castShadow receiveShadow>
@@ -151,6 +250,7 @@ const PipeSegment = ({ riskLevel, length }) => {
         <meshPhysicalMaterial color="#e2e8f0" transmission={0.95} transparent opacity={1} roughness={0.05} ior={1.5} thickness={0.5} depthWrite={false} />
       </mesh>
       <PipeWater riskLevel={riskLevel} length={length} />
+      <LeakEffect isLeaking={isLeaking} />
     </>
   );
 };
@@ -177,14 +277,14 @@ const CityBlock = ({ position, isHQ }) => {
 
   const buildings = useMemo(() => {
     const arr = [];
-    for(let i=0; i<4; i++) {
+    for (let i = 0; i < 4; i++) {
       const h = 2 + Math.random() * 6;
       const w = 3 + Math.random() * 2;
       const d = 3 + Math.random() * 2;
       const px = (Math.random() - 0.5) * 6;
       const pz = (Math.random() - 0.5) * 6;
       arr.push(
-        <mesh key={i} position={[px, h/2, pz]} castShadow receiveShadow>
+        <mesh key={i} position={[px, h / 2, pz]} castShadow receiveShadow>
           <boxGeometry args={[w, h, d]} />
           <meshStandardMaterial color="#0f172a" metalness={0.6} roughness={0.4} />
         </mesh>
@@ -210,7 +310,7 @@ const generateDefaultNetwork = () => {
           startZ: z * spacing,
           endX: (x + 1) * spacing,
           endZ: z * spacing,
-          baseRiskOffset: Math.sin(x*4 + z*3) * 15
+          baseRiskOffset: Math.sin(x * 4 + z * 3) * 15
         });
       }
       if (z < gridSize) {
@@ -220,7 +320,7 @@ const generateDefaultNetwork = () => {
           startZ: z * spacing,
           endX: x * spacing,
           endZ: (z + 1) * spacing,
-          baseRiskOffset: Math.cos(x*2 + z*5) * 15
+          baseRiskOffset: Math.cos(x * 2 + z * 5) * 15
         });
       }
     }
@@ -228,7 +328,7 @@ const generateDefaultNetwork = () => {
   return data;
 };
 
-const PipeNetwork = ({ riskLevel, isAutoBalanceEnabled, networkData, showBuildings }) => {
+const PipeNetwork = ({ riskLevel, isAutoBalanceEnabled, networkData, showBuildings, isValveOpen }) => {
   const pipes = [];
   const blocks = [];
   const spacing = 16;
@@ -239,15 +339,15 @@ const PipeNetwork = ({ riskLevel, isAutoBalanceEnabled, networkData, showBuildin
     if (riskLevel > 130) return base; // Kapasite tamamen aşıldı, sistem çöküyor
     // Kurtarılabilir durum: Yüksek riskleri alçalt, düşükleri yükselt
     const diff = base - 70;
-    return 70 + (diff * 0.3); 
+    return 70 + (diff * 0.3);
   };
 
   // 1. Binaları Çiz (Arka plan görseli için)
   if (showBuildings) {
     for (let z = -gridSize; z < gridSize; z++) {
       for (let x = -gridSize; x < gridSize; x++) {
-         const isHQ = (x === 0 && z === 0);
-         blocks.push(<CityBlock key={`block-${x}-${z}`} position={[x * spacing + spacing/2, 0, z * spacing + spacing/2]} isHQ={isHQ} />);
+        const isHQ = (x === 0 && z === 0);
+        blocks.push(<CityBlock key={`block-${x}-${z}`} position={[x * spacing + spacing / 2, 0, z * spacing + spacing / 2]} isHQ={isHQ} />);
       }
     }
   }
@@ -255,8 +355,8 @@ const PipeNetwork = ({ riskLevel, isAutoBalanceEnabled, networkData, showBuildin
   // 2. Kavşakları Çiz (Benzersiz koordinatlardan)
   const junctionMap = new Map();
   networkData.forEach(pipe => {
-    junctionMap.set(`${pipe.startX},${pipe.startZ}`, {x: pipe.startX, z: pipe.startZ});
-    junctionMap.set(`${pipe.endX},${pipe.endZ}`, {x: pipe.endX, z: pipe.endZ});
+    junctionMap.set(`${pipe.startX},${pipe.startZ}`, { x: pipe.startX, z: pipe.startZ });
+    junctionMap.set(`${pipe.endX},${pipe.endZ}`, { x: pipe.endX, z: pipe.endZ });
   });
 
   Array.from(junctionMap.values()).forEach((junc, i) => {
@@ -283,10 +383,11 @@ const PipeNetwork = ({ riskLevel, isAutoBalanceEnabled, networkData, showBuildin
     const midZ = (pipe.startZ + pipe.endZ) / 2;
 
     const localRisk = applyBalance(riskLevel + (pipe.baseRiskOffset || 0));
+    const isLeaking = !isValveOpen && localRisk > 100;
 
     pipes.push(
       <group key={pipe.id} position={[midX, 0, midZ]} rotation={[0, rotY, 0]}>
-        <PipeSegment riskLevel={localRisk} length={length} />
+        <PipeSegment riskLevel={localRisk} length={length} isLeaking={isLeaking} />
       </group>
     );
   });
@@ -299,29 +400,28 @@ const PipeNetwork = ({ riskLevel, isAutoBalanceEnabled, networkData, showBuildin
   );
 };
 
-const Scene = ({ riskLevel, isAutoBalanceEnabled, networkData, showBuildings }) => {
+const Scene = ({ riskLevel, isAutoBalanceEnabled, networkData, showBuildings, simRainfall, selectedPipe, onArrive, isValveOpen }) => {
   const isHighRisk = isAutoBalanceEnabled ? riskLevel > 130 : riskLevel > 100;
 
   return (
     <>
       <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxPolarAngle={Math.PI / 2 - 0.05} target={[10, 0, 10]} />
+      <CameraController selectedPipe={selectedPipe} onArrive={onArrive} />
+      <RainEffect isRaining={simRainfall > 80} />
 
       <ambientLight intensity={0.4} />
-      <directionalLight 
-        position={[20, 40, 20]} 
-        intensity={1.5} 
-        castShadow 
-        shadow-mapSize={[2048, 2048]} 
-        shadow-camera-far={150} 
-        shadow-camera-left={-60} 
-        shadow-camera-right={60} 
-        shadow-camera-top={60} 
-        shadow-camera-bottom={-60} 
+      <directionalLight
+        position={[20, 40, 20]}
+        intensity={1.5}
+        castShadow
+        shadow-mapSize={[2048, 2048]}
+        shadow-camera-far={150}
+        shadow-camera-left={-60}
+        shadow-camera-right={60}
+        shadow-camera-top={60}
+        shadow-camera-bottom={-60}
       />
       <Environment preset="city" />
-
-      {/* Grid Helper for technical look */}
-      <Grid infiniteGrid fadeDistance={100} sectionColor="#475569" cellColor="#334155" />
 
       {/* Street Level / Ground */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
@@ -329,14 +429,14 @@ const Scene = ({ riskLevel, isAutoBalanceEnabled, networkData, showBuildings }) 
         <meshStandardMaterial
           color="#0f172a"
           transparent
-          opacity={0.85}
+          opacity={0.3}
           depthWrite={false}
           roughness={0.8}
         />
       </mesh>
 
       {/* City Blocks & Pipe Network */}
-      <PipeNetwork riskLevel={riskLevel} isAutoBalanceEnabled={isAutoBalanceEnabled} networkData={networkData} showBuildings={showBuildings} />
+      <PipeNetwork riskLevel={riskLevel} isAutoBalanceEnabled={isAutoBalanceEnabled} networkData={networkData} showBuildings={showBuildings} isValveOpen={isValveOpen} />
 
       {/* Flood Simulation Layer */}
       <FloodLayer isFlooding={isHighRisk} />
@@ -364,6 +464,9 @@ function App() {
   const [showBuildings, setShowBuildings] = useState(true);
   const [newPipe, setNewPipe] = useState({ startX: 0, startZ: 0, endX: 16, endZ: 16 });
 
+  const [selectedPipe, setSelectedPipe] = useState(null);
+  const [isValveOpen, setIsValveOpen] = useState(false);
+
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -373,7 +476,7 @@ function App() {
       const text = evt.target.result;
       const lines = text.split('\n');
       const newNetwork = [];
-      
+
       for (let i = 1; i < lines.length; i++) {
         if (!lines[i].trim()) continue;
         const cols = lines[i].split(',');
@@ -439,15 +542,20 @@ function App() {
   }, [isSimulationMode, simRainfall, simCapacity, simPipeAge]);
 
   // Backend veriyi "%15.0" şeklinde string olarak dönüyor, sayıyı ayıklamamız lazım
-  const riskValue = typeof data.hesaplananRisk === 'string'
+  const baseRiskValue = typeof data.hesaplananRisk === 'string'
     ? parseFloat(data.hesaplananRisk.replace('%', ''))
     : (data.hesaplananRisk || 0);
+
+  // Vana açıksa riski %50 düşür
+  const riskValue = isValveOpen ? baseRiskValue * 0.5 : baseRiskValue;
 
   const isHighRisk = isAutoBalanceEnabled ? riskValue > 130 : riskValue > 100;
 
   // Dinamik Aksiyon Metni
   let actionText = data.alinanAksiyon;
-  if (isAutoBalanceEnabled && riskValue > 100 && riskValue <= 130) {
+  if (isValveOpen) {
+    actionText = "🚨 ACİL DURUM VANASI AÇIK: Su yedek hatta tahliye ediliyor. Risk %50 düşürüldü.";
+  } else if (isAutoBalanceEnabled && riskValue > 100 && riskValue <= 130) {
     actionText = "🤖 OTONOM YÖNLENDİRME AKTİF! Fazla su komşu hatlara dağıtılarak taşkın engellendi.";
   } else if (isAutoBalanceEnabled && riskValue > 130) {
     actionText = "❌ SİSTEM ÇÖKTÜ! Dengeleme kapasitesi aşıldı, taşkın engellenemiyor!";
@@ -476,7 +584,16 @@ function App() {
       {/* 3D Canvas Area (75%) */}
       <div className="canvas-container">
         <Canvas shadows camera={{ position: [30, 25, 40], fov: 45 }} gl={{ localClippingEnabled: true }}>
-          <Scene riskLevel={riskValue} isAutoBalanceEnabled={isAutoBalanceEnabled} networkData={networkData} showBuildings={showBuildings} />
+          <Scene
+            riskLevel={riskValue}
+            isAutoBalanceEnabled={isAutoBalanceEnabled}
+            networkData={networkData}
+            showBuildings={showBuildings}
+            simRainfall={simRainfall}
+            selectedPipe={selectedPipe}
+            onArrive={() => setSelectedPipe(null)}
+            isValveOpen={isValveOpen}
+          />
         </Canvas>
 
         {/* Decorative Overlay Elements */}
@@ -498,9 +615,9 @@ function App() {
         <div className="data-cards">
           {/* Altyapı Veri Yöneticisi Butonu */}
           <div className="data-card" style={{ padding: '0.5rem' }}>
-             <button className="action-btn" style={{ width: '100%' }} onClick={() => setShowNetworkEditor(true)}>
-               🗺️ Altyapı Veri Yöneticisi (GIS)
-             </button>
+            <button className="action-btn" style={{ width: '100%' }} onClick={() => setShowNetworkEditor(true)}>
+              🗺️ Altyapı Veri Yöneticisi (GIS)
+            </button>
           </div>
 
           <div className={`data-card risk-card ${isHighRisk ? 'critical' : 'normal'}`}>
@@ -525,6 +642,18 @@ function App() {
             <div className="card-text">{actionText}</div>
           </div>
 
+          {/* Kritik Noktalar Kartı */}
+          <div className="data-card">
+            <span className="card-label">Kritik Noktalar (Kameralı)</span>
+            <div className="pipe-list" style={{ maxHeight: '120px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+              {networkData.slice(0, 5).map(pipe => (
+                <button key={pipe.id} className="action-btn" style={{ textAlign: 'left' }} onClick={() => setSelectedPipe(pipe)}>
+                  🎥 {pipe.id}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Patlama/Taşkın Tahmini Kartı */}
           <div className={`data-card risk-card ${patlamaDurumu === 'critical' ? 'critical' : ''}`}>
             <span className="card-label">Patlama / Taşkın Erken Uyarısı</span>
@@ -541,9 +670,9 @@ function App() {
             <div className="sim-header">
               <span className="card-label" style={{ marginBottom: 0 }}>Simülasyon Modu (Manuel)</span>
               <label className="toggle-switch">
-                <input 
-                  type="checkbox" 
-                  checked={isSimulationMode} 
+                <input
+                  type="checkbox"
+                  checked={isSimulationMode}
                   onChange={(e) => setIsSimulationMode(e.target.checked)}
                 />
                 <span className="toggle-slider round"></span>
@@ -553,9 +682,9 @@ function App() {
             <div className="sim-header" style={{ marginTop: '1rem', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '1rem' }}>
               <span className="card-label" style={{ marginBottom: 0 }}>🏢 Binaları Gizle/Göster</span>
               <label className="toggle-switch">
-                <input 
-                  type="checkbox" 
-                  checked={showBuildings} 
+                <input
+                  type="checkbox"
+                  checked={showBuildings}
                   onChange={(e) => setShowBuildings(e.target.checked)}
                 />
                 <span className="toggle-slider round"></span>
@@ -565,15 +694,15 @@ function App() {
             <div className="sim-header" style={{ marginTop: '1rem', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '1rem' }}>
               <span className="card-label" style={{ marginBottom: 0, color: '#38bdf8' }}>🤖 Otonom Yük Dengeleme</span>
               <label className="toggle-switch">
-                <input 
-                  type="checkbox" 
-                  checked={isAutoBalanceEnabled} 
+                <input
+                  type="checkbox"
+                  checked={isAutoBalanceEnabled}
                   onChange={(e) => setIsAutoBalanceEnabled(e.target.checked)}
                 />
                 <span className="toggle-slider round"></span>
               </label>
             </div>
-            
+
             <div className={`sim-controls-wrapper ${isSimulationMode ? 'open' : ''}`}>
               <div className="sim-controls">
                 <div className="slider-group">
@@ -583,7 +712,7 @@ function App() {
                   </div>
                   <input type="range" className="glass-range" min="0" max="150" value={simRainfall} onChange={(e) => setSimRainfall(Number(e.target.value))} />
                 </div>
-                
+
                 <div className="slider-group">
                   <div className="slider-label">
                     <span>🚰 Boru Kapasitesi</span>
@@ -591,7 +720,7 @@ function App() {
                   </div>
                   <input type="range" className="glass-range" min="10" max="100" value={simCapacity} onChange={(e) => setSimCapacity(Number(e.target.value))} />
                 </div>
-                
+
                 <div className="slider-group">
                   <div className="slider-label">
                     <span>⏳ Boru Yaşı</span>
@@ -601,6 +730,22 @@ function App() {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Acil Müdahale Kartı */}
+          <div className="data-card simulation-card" style={{ borderColor: (baseRiskValue > 100 || isValveOpen) ? '#ef4444' : 'rgba(255,255,255,0.1)' }}>
+            <span className="card-label">Acil Müdahale</span>
+            {(baseRiskValue > 100 || isValveOpen) ? (
+              <button
+                className={`action-btn ${isValveOpen ? 'success-btn' : 'danger-btn'}`}
+                style={{ width: '100%', marginTop: '0.5rem', backgroundColor: isValveOpen ? '#10b981' : '#ef4444', color: '#fff' }}
+                onClick={() => setIsValveOpen(!isValveOpen)}
+              >
+                {isValveOpen ? 'Vana Açık (Risk -%50) - Kapat' : '🚨 Yedek Hatta Suyu Aktar (Vana Aç)'}
+              </button>
+            ) : (
+              <div className="card-text text-sm" style={{ marginTop: '0.5rem' }}>Sistem stabil, müdahale gerekmiyor.</div>
+            )}
           </div>
 
           {data.zamanDamgasi && (
@@ -626,25 +771,25 @@ function App() {
         <div className="modal-overlay">
           <div className="modal-content">
             <div className="modal-header">
-              <h2 style={{margin:0}}>🗺️ Altyapı Ağ Düzenleyicisi (GIS)</h2>
+              <h2 style={{ margin: 0 }}>🗺️ Altyapı Ağ Düzenleyicisi (GIS)</h2>
               <button className="close-btn" onClick={() => setShowNetworkEditor(false)}>✖</button>
             </div>
-            
+
             <div className="form-group">
               <div className="input-field">
                 <label>CSV Dosyası Yükle</label>
                 <input type="file" accept=".csv" onChange={handleFileUpload} />
-                <small style={{color: '#94a3b8'}}>Format: id, startX, startZ, endX, endZ</small>
+                <small style={{ color: '#94a3b8' }}>Format: id, startX, startZ, endX, endZ</small>
               </div>
             </div>
 
             <hr style={{ borderColor: 'rgba(255,255,255,0.1)' }} />
 
             <div className="form-group">
-              <div className="input-field"><label>Start X</label><input type="number" value={newPipe.startX} onChange={e => setNewPipe({...newPipe, startX: e.target.value})} /></div>
-              <div className="input-field"><label>Start Z</label><input type="number" value={newPipe.startZ} onChange={e => setNewPipe({...newPipe, startZ: e.target.value})} /></div>
-              <div className="input-field"><label>End X</label><input type="number" value={newPipe.endX} onChange={e => setNewPipe({...newPipe, endX: e.target.value})} /></div>
-              <div className="input-field"><label>End Z</label><input type="number" value={newPipe.endZ} onChange={e => setNewPipe({...newPipe, endZ: e.target.value})} /></div>
+              <div className="input-field"><label>Start X</label><input type="number" value={newPipe.startX} onChange={e => setNewPipe({ ...newPipe, startX: e.target.value })} /></div>
+              <div className="input-field"><label>Start Z</label><input type="number" value={newPipe.startZ} onChange={e => setNewPipe({ ...newPipe, startZ: e.target.value })} /></div>
+              <div className="input-field"><label>End X</label><input type="number" value={newPipe.endX} onChange={e => setNewPipe({ ...newPipe, endX: e.target.value })} /></div>
+              <div className="input-field"><label>End Z</label><input type="number" value={newPipe.endZ} onChange={e => setNewPipe({ ...newPipe, endZ: e.target.value })} /></div>
               <button className="action-btn" onClick={handleAddPipe}>+ Ekle</button>
             </div>
 
@@ -652,12 +797,12 @@ function App() {
               {networkData.map(pipe => (
                 <div key={pipe.id} className="pipe-item">
                   <span>{pipe.id} ({pipe.startX}, {pipe.startZ} &rarr; {pipe.endX}, {pipe.endZ})</span>
-                  <button className="action-btn danger-btn" style={{padding:'0.3rem 0.6rem'}} onClick={() => handleDeletePipe(pipe.id)}>Sil</button>
+                  <button className="action-btn danger-btn" style={{ padding: '0.3rem 0.6rem' }} onClick={() => handleDeletePipe(pipe.id)}>Sil</button>
                 </div>
               ))}
             </div>
 
-            <button className="action-btn danger-btn" style={{marginTop: '1rem'}} onClick={() => setNetworkData([])}>Tüm Ağı Temizle</button>
+            <button className="action-btn danger-btn" style={{ marginTop: '1rem' }} onClick={() => setNetworkData([])}>Tüm Ağı Temizle</button>
           </div>
         </div>
       )}
